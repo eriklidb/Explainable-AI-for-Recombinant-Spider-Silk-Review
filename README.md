@@ -24,11 +24,13 @@ If you want to play around with the code yourself, you can follow these steps on
 1. Clone the repository: 
 ```
 git clone https://github.com/eriklidb/Explainable-AI-for-Recombinant-Spider-Silk-Review
-2. Create a virtual environment: 
+```
+2. Create a virtual environment:
 ```
 python -m venv spidro_env
 ```
-3. Activate it. On Linux/MacOS: 
+3. Activate it.
+On Linux/MacOS: 
 ```
 source spidro_env/bin/activate
 ``` 
