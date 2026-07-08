@@ -1,12 +1,16 @@
 import os
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
 from typing import Literal
 
 class Dataset():
     def __init__(self, 
                  source: pd.DataFrame | str = 'spinning_data.csv',
-                 scaler: Literal['minmax', 'standard', 'none'] = 'minmax') -> None:
+                 scaler: Literal['minmax', 'standard', 'none'] = 'minmax',
+                 preprocess: bool = False) -> None:
         if isinstance(source, pd.DataFrame):
             self._df = source.reset_index(drop=True)
         else:
@@ -23,13 +27,31 @@ class Dataset():
         self._df.loc[:, self.categorical_columns] = self._df.loc[:, self.categorical_columns].astype('category')
         self._df.loc[:, self.target_columns] = self._df.loc[:, self.target_columns].astype(float)
 
-        if scaler == 'none':
-            return
-        elif scaler == 'minmax':
-            self._scaler = MinMaxScaler()
-        elif scaler == 'standard':
-            self._scaler = StandardScaler()
-        self._df.iloc[:, -5:] = self._scaler.fit_transform(self._df.iloc[:, -5:])
+        if scaler != 'none':
+            if scaler == 'minmax':
+                self._scaler = MinMaxScaler()
+            elif scaler == 'standard':
+                self._scaler = StandardScaler()
+            self._df.iloc[:, -5:] = self._scaler.fit_transform(self._df.iloc[:, -5:])
+        if preprocess:
+            categorical_cols = self.features.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+            numerical_cols = self.features.select_dtypes(exclude=["object", "category", "bool"]).columns.tolist()
+            numeric_transformer = Pipeline(steps=[
+                ("imputer", SimpleImputer(strategy="median"))
+            ])
+            categorical_transformer = Pipeline(steps=[
+                ("imputer", SimpleImputer(strategy="most_frequent")),  # or strategy="constant", fill_value="missing"
+                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+            ])
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    ("num", numeric_transformer, numerical_cols),
+                    ("cat", categorical_transformer, categorical_cols),
+                ]
+            )
+            self._df = pd.concat((pd.DataFrame(self.sample_numbers), pd.DataFrame(preprocessor.fit_transform(self.features)), self.targets), axis=1)
+
+
 
     
     def __len__(self) -> int:

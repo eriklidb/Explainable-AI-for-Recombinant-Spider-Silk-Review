@@ -4,6 +4,8 @@ from sklearn.model_selection import KFold, GroupKFold
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 import optuna
 from dataset import Dataset
 from typing import Iterator, Literal, Sequence
@@ -53,9 +55,10 @@ class ModelTrainer():
             def objective(trial: optuna.trial.Trial) -> float | Sequence[float]:
                 params = {
                     "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
-                    "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 50),
-                    "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 20),
+                    "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
+                    "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 50),
                     "l2_regularization": trial.suggest_float("l2_regularization", 1e-3, 10.0, log=True),
+                    "max_depth": trial.suggest_categorical("max_depth", [3, 5, 8, None]),
                 }
 
                 # Use early stopping in inner CV
@@ -116,6 +119,62 @@ class ModelTrainer():
             best_params[-1]['max_iter'] = max_iter_final
         return best_params
 
+    def hyperparameter_search_rf(self, ds: Dataset,
+                          target: None | str = None,
+                          n_trails: int|None=None,
+                          timeout: int|None=None,
+                          n_jobs: int=1,
+                          study_name: str|None=None) -> list[dict[str, Any]]:
+        multioutput = target is None
+        X, Y = ds()
+        sample_nums = ds.sample_numbers
+        if not multioutput:
+            Y = Y.loc[:, target]
+        best_params = []
+            
+        for outer_fold, (train_idx, test_idx) in enumerate(self._outer_cv.split(X, groups=sample_nums.to_numpy())):
+            X_train, _ = X.iloc[train_idx], X.iloc[test_idx]
+            Y_train, _ = Y.iloc[train_idx], Y.iloc[test_idx]
+
+            iteration_counts = []
+
+            def objective(trial: optuna.trial.Trial) -> float | Sequence[float]:
+                params = {
+                    "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+                    "max_depth": trial.suggest_categorical("max_depth", [None, 5, 10, 20, 30]),
+                    "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+                    "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
+                    "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", 0.3, 0.5, 1.0, None]),
+                    "bootstrap": trial.suggest_categorical("bootstrap", [True, False])
+                }
+
+                # Use early stopping in inner CV
+                model = RandomForestRegressor(**params)
+
+                scores = []
+                for inner_train_idx, val_idx in self._inner_cv.split(X_train, groups=sample_nums[train_idx].to_numpy()):
+                    X_inner_train, X_val = X_train.iloc[inner_train_idx], X_train.iloc[val_idx]
+                    Y_inner_train, Y_val = Y_train.iloc[inner_train_idx], Y_train.iloc[val_idx]
+                    model.fit(X_inner_train, Y_inner_train)
+
+                    preds = model.predict(X_val)
+                    score = root_mean_squared_error(Y_val, preds)
+                    scores.append(score)
+
+                return float(np.mean(scores))
+
+            seed = self._random_state if type(self._random_state) == int else None
+            sampler = optuna.samplers.TPESampler(seed=seed)
+            if multioutput:
+                study_name_ = None if study_name is None else f'{study_name}_{outer_fold}'
+            else:
+                study_name_ = None if study_name is None else f'{study_name}_{outer_fold}_{target}'
+            study = optuna.create_study(direction="minimize", study_name=study_name_, sampler=sampler)
+            study.optimize(objective, n_trials=n_trails, timeout=timeout, n_jobs=n_jobs)
+
+            best_params.append(study.best_params)
+        return best_params
+
     def train_model(self, 
                     ds: Dataset, 
                     params: list[dict[str, Any]],
@@ -136,8 +195,42 @@ class ModelTrainer():
             final_model = MultiOutputRegressor(HistGradientBoostingRegressor(**params[outer_fold])) if multioutput else \
                 HistGradientBoostingRegressor(**params[outer_fold])
             final_model.fit(X_train, Y_train)
-
             outer_models.append(final_model)
+        return outer_models
+
+    def train_lr_model(self, 
+                    ds: Dataset,
+                    target: None | str = None) -> list[LinearRegression]:
+        multioutput = target is None
+        X, Y = ds()
+        if not multioutput:
+            Y = Y.loc[:, target]
+
+        outer_models = []
+        for (train_idx, test_idx) in self._outer_cv.split(X, groups=ds.sample_numbers.to_numpy()):
+            X_train, _ = X.iloc[train_idx], X.iloc[test_idx]
+            Y_train, _ = Y.iloc[train_idx], Y.iloc[test_idx]
+            lr_model = LinearRegression()
+            lr_model.fit(X_train, Y_train)
+            outer_models.append(lr_model)
+        return outer_models
+
+    def train_rf_model(self, 
+                    ds: Dataset,
+                    params: list[dict[str, Any]],
+                    target: None | str = None) -> list[LinearRegression]:
+        multioutput = target is None
+        X, Y = ds()
+        if not multioutput:
+            Y = Y.loc[:, target]
+
+        outer_models = []
+        for outer_fold, (train_idx, test_idx) in enumerate(self._outer_cv.split(X, groups=ds.sample_numbers.to_numpy())):
+            X_train, _ = X.iloc[train_idx], X.iloc[test_idx]
+            Y_train, _ = Y.iloc[train_idx], Y.iloc[test_idx]
+            rf_model = RandomForestRegressor(**params[outer_fold])
+            rf_model.fit(X_train, Y_train)
+            outer_models.append(rf_model)
         return outer_models
 
 def save_model(model: Any, fname: str) -> None:
