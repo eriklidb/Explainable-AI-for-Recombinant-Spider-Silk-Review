@@ -5,6 +5,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from typing import Literal
+import numpy as np
 
 class Dataset():
     def __init__(self, 
@@ -22,6 +23,9 @@ class Dataset():
             else:
                 raise ValueError('Filetype must be either CSV or HDF.')
             
+        #self._df.loc[:, 'Number of baths'] = self._df.loc[:, 'Number of baths'].astype(str)#.replace({1.0: '1', 2.0: '2', np.nan: 'missing'})
+        self._df['Number of baths'] = self._df['Number of baths'].astype('Int64').astype('str')#.fillna('missing')
+        self._df = self._df.loc[:, ['Sample number'] + sorted(self.numerical_columns) + sorted(self.categorical_columns) + sorted(self.target_columns)]
         #self._df.loc[:,'Number of baths'] = self._df.loc[:,'Number of baths'].astype(object)
         self._df.loc[:, self.numerical_columns] = self._df.loc[:, self.numerical_columns].astype(float)
         self._df.loc[:, self.categorical_columns] = self._df.loc[:, self.categorical_columns].astype('category')
@@ -33,6 +37,8 @@ class Dataset():
             elif scaler == 'standard':
                 self._scaler = StandardScaler()
             self._df.iloc[:, -5:] = self._scaler.fit_transform(self._df.iloc[:, -5:])
+
+        self._df.loc[:, self.categorical_columns] = self._df.loc[:, self.categorical_columns].fillna('missing')
         if preprocess:
             categorical_cols = self.features.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
             numerical_cols = self.features.select_dtypes(exclude=["object", "category", "bool"]).columns.tolist()
@@ -49,7 +55,22 @@ class Dataset():
                     ("cat", categorical_transformer, categorical_cols),
                 ]
             )
-            self._df = pd.concat((pd.DataFrame(self.sample_numbers), pd.DataFrame(preprocessor.fit_transform(self.features)), self.targets), axis=1)
+            #self._df = pd.concat((pd.DataFrame(self.sample_numbers), pd.DataFrame(preprocessor.fit_transform(self.features)), self.targets), axis=1)
+            X_processed = preprocessor.fit_transform(self.features)
+            feature_names = preprocessor.get_feature_names_out()
+            self._df = pd.concat(
+                (
+                    pd.DataFrame(self.sample_numbers),
+                    pd.DataFrame(
+                        X_processed,
+                        columns=feature_names,
+                        index=self.features.index
+                    ),
+                    self.targets,
+                ),
+                axis=1,
+            )
+            self._preprocessor = preprocessor
 
 
 
